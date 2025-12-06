@@ -119,21 +119,53 @@ router.get('/:symbol', async (req, res) => {
       await new Promise(r => setTimeout(r, 15));
     }
     
-    // Sort by time and deduplicate
+    // Sort by time
     allCandles.sort((a, b) => a.time - b.time);
     
-    // Deduplicate by time
-    const uniqueCandles: any[] = [];
-    let lastTime = 0;
+    // Aggregate into 1s OHLC candles
+    const candleMap = new Map<number, any>();
     for (const c of allCandles) {
-      if (c.time !== lastTime) {
-        uniqueCandles.push(c);
-        lastTime = c.time;
+      const bucket = c.time;
+      let candle = candleMap.get(bucket);
+      if (!candle) {
+        candle = { 
+          time: bucket, 
+          open: c.close, 
+          high: c.close, 
+          low: c.close, 
+          close: c.close,
+          prices: [c.close] // Track all prices in this second
+        };
+        candleMap.set(bucket, candle);
+      } else {
+        candle.prices.push(c.close);
+        if (c.close > candle.high) candle.high = c.close;
+        if (c.close < candle.low) candle.low = c.close;
+        candle.close = c.close;
       }
     }
     
-    console.log(`[Intraday] Total: ${allCandles.length}, unique: ${uniqueCandles.length}`);
-    res.json(uniqueCandles);
+    // Finalize candles - set open from first price
+    const aggregatedCandles = Array.from(candleMap.values())
+      .map(c => {
+        // Open is first price, close is last price
+        c.open = c.prices[0];
+        c.close = c.prices[c.prices.length - 1];
+        delete c.prices;
+        return c;
+      })
+      .sort((a, b) => a.time - b.time);
+    
+    // Log stats
+    const avgTicksPerCandle = allCandles.length / aggregatedCandles.length;
+    console.log(`[Intraday] Total ticks: ${allCandles.length}, candles: ${aggregatedCandles.length}, avg ticks/candle: ${avgTicksPerCandle.toFixed(1)}`);
+    
+    // Sample candle with multiple ticks
+    const multiTickCandle = aggregatedCandles.find(c => c.high !== c.low);
+    if (multiTickCandle) {
+      console.log('[Intraday] Sample OHLC candle:', JSON.stringify(multiTickCandle));
+    }
+    res.json(aggregatedCandles);
   } catch (error: any) {
     console.error('[Intraday] Error:', error.message);
     res.status(500).json({ error: error.message });
